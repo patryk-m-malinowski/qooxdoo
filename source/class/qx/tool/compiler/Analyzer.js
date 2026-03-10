@@ -335,6 +335,15 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
      */
     async saveDatabase() {
       log.debug("saving generator database");
+      if (this.__cachedClassInfo) {
+        this.__db.classInfo = {};
+        for (let classname in this.__cachedClassInfo) {
+          let info = this.__cachedClassInfo[classname];
+          if (info !== null) {
+            this.__db.classInfo[classname] = info;
+          }
+        }
+      }
       await qx.tool.utils.Json.saveJsonAsync(this.getDbFilename(), this.__db).then(
         () => this.__resManager && this.__resManager.saveDatabase()
       );
