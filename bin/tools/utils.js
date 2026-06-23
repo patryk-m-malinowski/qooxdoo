@@ -4,6 +4,8 @@ const child_process = require("child_process");
 
 const fsPromises = fs.promises;
 
+let DEBUG = false;
+
 
 /**
  * Return the path to the compiler executable, unless the "QX_JS" OS environment
@@ -39,13 +41,34 @@ async function debugCompiler(dir, ...cmd) {
 }
 
 async function runCommand(dir, ...args) {
-  const originalCmd = args.shift();
+  let originalCmd = args.shift();
+  let env = Object.assign({}, process.env);
+  if (DEBUG) {
+    env.QOOXDOO_DEBUG = "true";
+  }
   return new Promise((resolve, reject) => {
-    const proc = child_process.spawn(originalCmd, args, { cwd: dir, shell: true });
-    const result = { exitCode: null, output: "", error: "", messages: null };
-    proc.stdout.on("data", data => { data = data.toString().trim(); console.log(data); result.output += data; });
-    proc.stderr.on("data", data => { data = data.toString().trim(); console.error(data); result.error += data; });
-    proc.on("close", code => { result.exitCode = code; resolve(result); });
+    if (DEBUG) {
+      console.debug(`    [[DEBUG]] Running command in ${dir}: ${originalCmd} ${args.join(" ")}`);
+    }
+    let proc = child_process.spawn(originalCmd, args, { 
+      cwd: dir,
+      env: env
+    });
+    let result = { exitCode: null, output: "", error: "", messages: null };
+    proc.stdout.on("data", data => { 
+      data = data.toString().trim(); 
+      console.log(data); 
+      result.output += data; 
+    });
+    proc.stderr.on("data", data => { 
+      data = data.toString().trim(); 
+      console.error(data); 
+      result.error += data; 
+    });
+    proc.on("close", code => { 
+      result.exitCode = code; 
+      resolve(result); 
+    });
     proc.on("error", reject);
   });
 }
@@ -63,7 +86,9 @@ function defaultOptions() {
 }
 
 async function bootstrapCompiler(options) {
-  if (!options) options = defaultOptions();
+  if (!options) {
+    options = defaultOptions();
+  }
 
   if (options.clean) {
     console.log("Deleting previous bootstrap compiler");
@@ -73,7 +98,10 @@ async function bootstrapCompiler(options) {
 
   console.log(`Creating temporary compiler with known-good one, target=${options.target}`);
   let result = await runCommand("known-good", "node", "../bin/known-good/qx", "compile", "--target=" + options.target);
-  if (result.exitCode) { console.log("Error compiling known-good:", result.exitCode); return result.exitCode; }
+  if (result.exitCode) { 
+    console.log("Error compiling known-good:", result.exitCode); 
+    return result.exitCode; 
+  }
 
   await fs.promises.writeFile("bootstrap/qx",
 `#!/usr/bin/env node
@@ -84,15 +112,23 @@ require(path.join(__dirname, "compiled", "node", "${options.target}", "compiler"
   fs.chmodSync("bootstrap/qx", "777");
   fs.copyFileSync("bin/build/qx.cmd", "bootstrap/qx.cmd");
 
-  if (options.initialOnly) return;
+  if (options.initialOnly) {
+    return;
+  }
 
   console.log("Compiling source version");
   result = await runCommand(".", "node", "./bootstrap/qx", "compile", "--target=source", "--clean");
-  if (result.exitCode) { console.log("Error compiling source version:", result.exitCode); return result.exitCode; }
+  if (result.exitCode) { 
+    console.log("Error compiling source version:", result.exitCode); 
+    return result.exitCode; 
+  }
 
   console.log("Compiling build version");
   result = await runCommand(".", "node", "./bootstrap/qx", "compile", "--target=build", "--clean");
-  if (result.exitCode) { console.log("Error compiling build version:", result.exitCode); return result.exitCode; }
+  if (result.exitCode) { 
+    console.log("Error compiling build version:", result.exitCode); 
+    return result.exitCode; 
+  }
 
   console.log("Compiler successfully bootstrapped");
   return 0;
@@ -145,7 +181,9 @@ async function copyFile(from, to) {
 
 async function sync(from, to, filter) {
   const statFrom = await safeStat(from);
-  if (!statFrom) return;
+  if (!statFrom) {
+    return;
+  }
   const statTo = await safeStat(to);
 
   if (!statTo || statFrom.isDirectory() !== statTo.isDirectory()) {
@@ -208,6 +246,10 @@ function reportError(result) {
   return new Error(`*** The command exited with an ExitCode: ${result.exitCode}\n*** ERROR:\n${result.error}.\n*** OUTPUT: ${result.output}. `);
 }
 
+function setDebug(enabled) {
+  DEBUG = enabled;
+}
+
 module.exports = {
   getCompiler,
   runCompiler,
@@ -225,5 +267,6 @@ module.exports = {
   safeRename,
   correctCase,
   reportError,
-  fsPromises
+  fsPromises,
+  setDebug
 };

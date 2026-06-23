@@ -89,7 +89,8 @@ The `applications` key is an array of objects, and each object can contain:
   application (see below)
 
 - `outputPath` - (**optional**) the directory to place the application files
-  (e.g. boot.js and resource.js), relative to the target output directory
+  (e.g. boot.js and resource.js), relative to the target output directory.
+  If not specified, one is calculated for you
 
 - `bootPath` - (**optional**) the directory to find the template `index.html`
   and other files required for booting the application
@@ -352,6 +353,40 @@ your node applications - and because that target is focused on Node v11 and
 later it will use native support for language features like `async` and `await`
 etc.
 
+#### Target defaults
+
+If you do need to define multiple source and multiple build targets, it is handy
+to be able to set defaults; for this use the `targetDefaults` top level object,
+and those values will be used if the target does not specify a value.
+
+Note that the `environment` setting in `targetDefaults` is merged with that of the
+individual targets; the values in `targets` take prescedence over the values in 
+`targetDefaults`
+
+```json
+  "targetDefaults": {
+    "source": {
+      "environment": {
+        "mypackage.MyClass.mySetting": "1234"
+      }
+    },
+    "build": {
+      "environment": {
+        "mypackage.MyClass.mySetting": "abc"
+      }
+    }
+  },
+  "targets": [
+    {
+      "type": "source",
+      "environment": {
+        "mypackage.MyOtherClass.myOtherSetting": "hello"
+      }
+    }
+    // ...
+  ]
+```
+
 ### Bundling source files together (previous called Hybrid Targets)
 
 The compiler supports "bundling" of classes, which is a way to combine multiple
@@ -378,37 +413,32 @@ classes but excludes `qx.util.*` classes from bundling together.
 ## Custom compiler
 
 It is possible for the user to define their own compiler by extending the default Qooxdoo compiler. 
-This is useful for things like implementing your own language or transforming classes which are used on both the client and the server where the class need to be slightly different on the client. 
+This is useful for things like implementing your own language or transforming classes which are used on both the client 
+and the server where the class need to be slightly different on the client. 
+
 It is a more powerful alternative to the compile.js compiler API.
 
 To define a custom compiler, you need to first create an application in the `applications` section for your compiler 
 and set the flag `compiler: true` like so:
 ```json5  
   {
-    "type": "node", // always "node"
-    "compiler": true, //required
-    "class": "qx.tool.compiler.cli.Application", // required
-    "environment": {
-      "qx.tool.compiler.Compiler.compilerClass": "com.mycompany.myapp.CustomCompiler" // must be your custom compiler name
-    },
-    "name": "custom-compiler", // This can be anything you want, but it should be a meaningful name
-    "include": ["com.mycompany.myapp.CustomCompiler", "qx.tool.*"] // must be your custom compiler name and "qx.tool.*"
+    "type": "compiler", // always "compiler"
+    "compilerClass": "com.mycompany.myapp.CustomCompiler" // must be your custom compiler name
   } 
 
 ```
 
-You also need to create a specific target for the compiler. 
+You also need to create sopurce and build targets for the compiler. 
 This is so that the compiled output source files for your compiler will not overwrite your project's compiled files. 
 You need to add something like this to the `targets` section:
 
 ```json5
 {
-  "compiler": true, //required
   "type": "source",
-  "application-types": ["node"],
+  "application-types": ["compiler"],
   "outputPath": "compiled/source-compiler", // can be anything but make it meaningful
   "babelOptions": {
-    "targets": "chrome >= 80, firefox >= 80"
+    "targets": "node >= 20"
   }
 }
 ```

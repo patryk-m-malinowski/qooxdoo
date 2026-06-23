@@ -78,14 +78,7 @@ qx.Class.define("qx.tool.compiler.app.Translation", {
      */
     getPoFilename() {
       var library = this.getLibrary();
-      return (
-        library.getRootDir() +
-        "/" +
-        library.getTranslationPath() +
-        "/" +
-        this.getLocale() +
-        ".po"
-      );
+      return library.getRootDir() + "/" + library.getTranslationPath() + "/" + this.getLocale() + ".po";
     },
 
     /**
@@ -119,14 +112,9 @@ qx.Class.define("qx.tool.compiler.app.Translation", {
       var poFile = this.getPoFilename();
 
       return (t.__onRead = (async () => {
-        let stat;
-        try {
-          stat = await fs.promises.stat(poFile);
-        } catch (err) {
-          if (err.code == "ENOENT") {
-            return;
-          }
-          throw err;
+        let stat = await qx.tool.utils.files.Utils.safeStat(poFile);
+        if (!stat) {
+          return;
         }
         t.__mtime = stat.mtime;
 
@@ -151,11 +139,7 @@ qx.Class.define("qx.tool.compiler.app.Translation", {
         function set(key, value, append) {
           var index = null;
           var m = key.match(/^([^[]+)\[([0-9]+)\]$/);
-          value = value
-            .replace(/\\t/g, "\t")
-            .replace(/\\r/g, "\r")
-            .replace(/\\n/g, "\n")
-            .replace(/\\"/g, '"');
+          value = value.replace(/\\t/g, "\t").replace(/\\r/g, "\r").replace(/\\n/g, "\n").replace(/\\"/g, '"');
           if (m) {
             key = m[1];
             index = parseInt(m[2]);
@@ -209,10 +193,7 @@ qx.Class.define("qx.tool.compiler.app.Translation", {
                 }
                 {
                   const ref = entry.comments.reference;
-                  (
-                    (comment && comment.match(/[\w/\.]+:\d+/g)) ||
-                    []
-                  ).forEach(entry => {
+                  ((comment && comment.match(/[\w/\.]+:\d+/g)) || []).forEach(entry => {
                     const split = entry.split(":");
                     const classname = split[0];
                     const lineNo = parseInt(split[1], 10);
@@ -252,14 +233,8 @@ qx.Class.define("qx.tool.compiler.app.Translation", {
 
           if (line[0] == '"' && line[line.length - 1] == '"') {
             line = line.substring(1, line.length - 1);
-            if (
-              !lastKey.match(/^.*\[\d+\]$/) &&
-              (lastKey === null || entry[lastKey] === undefined)
-            ) {
-              log.error(
-                "Cannot interpret line because there is no key to append to, line " +
-                  (lineNo + 1)
-              );
+            if (!lastKey.match(/^.*\[\d+\]$/) && (lastKey === null || entry[lastKey] === undefined)) {
+              log.error("Cannot interpret line because there is no key to append to, line " + (lineNo + 1));
             } else {
               set(lastKey, line, true);
             }
@@ -278,11 +253,7 @@ qx.Class.define("qx.tool.compiler.app.Translation", {
 
           key = lastKey = m[1];
           var value = m[2];
-          if (
-            value.length >= 2 &&
-            value[0] == '"' &&
-            value[value.length - 1] == '"'
-          ) {
+          if (value.length >= 2 && value[0] == '"' && value[value.length - 1] == '"') {
             value = value.substring(1, value.length - 1);
             set(key, value);
           }
@@ -313,11 +284,7 @@ qx.Class.define("qx.tool.compiler.app.Translation", {
         if (value === undefined || value === null) {
           return;
         }
-        value = value
-          .replace(/\t/g, "\\t")
-          .replace(/\r/g, "\\r")
-          .replace(/\n/g, "\\n")
-          .replace(/"/g, '\\"');
+        value = value.replace(/\t/g, "\\t").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/"/g, '\\"');
         lines.push(key + ' "' + value + '"');
       }
 

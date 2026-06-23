@@ -29,6 +29,10 @@ qx.Class.define("qx.tool.utils.files.Utils", {
 
   statics: {
     async findAllFiles(dir, fnEach) {
+      let dirStat = await qx.tool.utils.files.Utils.safeStat(dir);
+      if (!dirStat) {
+        return;
+      }
       let filenames;
       try {
         filenames = await readdir(dir);
@@ -64,12 +68,16 @@ qx.Class.define("qx.tool.utils.files.Utils", {
 
       async function copy(statFrom, statTo) {
         if (statFrom.isDirectory()) {
-          if (statTo === null) {await mkdir(to);}
+          if (statTo === null) {
+            await mkdir(to);
+          }
           const files = await readdir(from);
           await Promise.all(files.map(file => t.sync(path.join(from, file), path.join(to, file), filter)));
         } else if (statFrom.isFile()) {
           const result = filter ? await filter(from, to) : true;
-          if (result) {await t.copyFile(from, to);}
+          if (result) {
+            await t.copyFile(from, to);
+          }
         }
       }
 
@@ -78,7 +86,9 @@ qx.Class.define("qx.tool.utils.files.Utils", {
       try {
         statTo = await stat(to);
       } catch (err) {
-        if (err.code !== "ENOENT") {throw err;}
+        if (err.code !== "ENOENT") {
+          throw err;
+        }
       }
 
       if (!statTo || statFrom.isDirectory() != statTo.isDirectory()) {
@@ -108,12 +118,17 @@ qx.Class.define("qx.tool.utils.files.Utils", {
      * @async
      */
     async safeStat(filename) {
-      try {
-        return await stat(filename);
-      } catch (err) {
-        if (err.code !== "ENOENT") {throw err;}
-        return null;
-      }
+      return await new Promise((resolve, reject) => {
+        fs.stat(filename, (err, stats) => {
+          if (!err) {
+            resolve(stats);
+          } else if (err.code === "ENOENT") {
+            resolve(null);
+          } else {
+            reject(err);
+          }
+        });
+      });
     },
 
     /**
@@ -123,11 +138,15 @@ qx.Class.define("qx.tool.utils.files.Utils", {
      * @async
      */
     async safeUnlink(filename) {
-      try {
-        await unlink(filename);
-      } catch (err) {
-        if (err.code !== "ENOENT") {throw err;}
-      }
+      return await new Promise((resolve, reject) => {
+        fs.unlink(filename, err => {
+          if (!err || err.code === "ENOENT") {
+            resolve();
+          } else {
+            reject(err);
+          }
+        });
+      });
     },
 
     /**
@@ -138,11 +157,15 @@ qx.Class.define("qx.tool.utils.files.Utils", {
      * @async
      */
     async safeRename(from, to) {
-      try {
-        await rename(from, to);
-      } catch (err) {
-        if (err.code !== "ENOENT") {throw err;}
-      }
+      return await new Promise((resolve, reject) => {
+        fs.rename(from, to, err => {
+          if (!err || err.code === "ENOENT") {
+            resolve();
+          } else {
+            reject(err);
+          }
+        });
+      });
     },
 
     /**
@@ -252,7 +275,9 @@ qx.Class.define("qx.tool.utils.files.Utils", {
         await stat(drivePrefix + dir);
         return next();
       } catch (err) {
-        if (err.code === "ENOENT") {return drivePrefix + dir;}
+        if (err.code === "ENOENT") {
+          return drivePrefix + dir;
+        }
         throw err;
       }
     }

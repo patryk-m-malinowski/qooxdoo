@@ -136,9 +136,7 @@ qx.Class.define("qx.tool.compiler.cli.commands.Test", {
             qx.tool.compiler.Console.info(`Test '${test.getName()}' passed.`);
           }
         } else if (test.getName()) {
-          qx.tool.compiler.Console.error(
-            `Test '${test.getName()}' failed with exit code ${exitCode}.`
-          );
+          qx.tool.compiler.Console.error(`Test '${test.getName()}' failed with exit code ${exitCode}.`);
         }
         // overwrite error code only in case of errors
         if (exitCode !== 0) {
@@ -161,12 +159,7 @@ qx.Class.define("qx.tool.compiler.cli.commands.Test", {
       this.argv["feedback"] = false;
       this.argv["show-startpage"] = false;
       // check for special test compiler config
-      if (
-        !this.argv.configFile &&
-        fs.existsSync(
-          path.join(process.cwd(), qx.tool.compiler.cli.commands.Test.CONFIG_FILENAME)
-        )
-      ) {
+      if (!this.argv.configFile && fs.existsSync(path.join(process.cwd(), qx.tool.compiler.cli.commands.Test.CONFIG_FILENAME))) {
         this.argv.configFile = qx.tool.compiler.cli.commands.Test.CONFIG_FILENAME;
       }
       this.addListener("changeExitCode", evt => {
@@ -180,8 +173,7 @@ qx.Class.define("qx.tool.compiler.cli.commands.Test", {
         if (
           !this.hasListener("runTests") &&
           this.__tests.length === 0 &&
-          (!this.getCompilerApi() ||
-            typeof this.getCompilerApi().beforeTests != "function")
+          (!this.getCompilerApi() || typeof this.getCompilerApi().beforeTests != "function")
         ) {
           qx.tool.compiler.Console.error(
             `No tests are registered! You need to either register tests, or install a testrunner.
@@ -197,10 +189,7 @@ qx.Class.define("qx.tool.compiler.cli.commands.Test", {
         if (this.argv.verbose) {
           console.log(this.argv);
         }
-        if (
-          this.getCompilerApi() &&
-          typeof this.getCompilerApi().beforeTests == "function"
-        ) {
+        if (this.getCompilerApi() && typeof this.getCompilerApi().beforeTests == "function") {
           await this.getCompilerApi().beforeTests(this);
         }
         for (let test of this.__tests) {
@@ -211,7 +200,7 @@ qx.Class.define("qx.tool.compiler.cli.commands.Test", {
         // for bash exitcode is not allowed to be more then 255!
         process.exitCode = Math.min(255, this.getExitCode());
         // We must exit the process here because serve runs infinite!
-        process.exit(); 
+        process.exit();
       });
 
       // setNeedsServer so that it is usable in compile.js
@@ -228,11 +217,7 @@ qx.Class.define("qx.tool.compiler.cli.commands.Test", {
     },
 
     __needsServer() {
-      return (
-        !this.argv.disableWebserver &&
-        (this.getNeedsServer() ||
-          this.__tests.some(test => test.getNeedsServer()))
-      );
+      return !this.argv.disableWebserver && (this.getNeedsServer() || this.__tests.some(test => test.getNeedsServer()));
     }
   }
 });

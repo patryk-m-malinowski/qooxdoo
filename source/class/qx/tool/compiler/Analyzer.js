@@ -23,7 +23,6 @@
 /* eslint no-nested-ternary: 0 */
 /* eslint no-inner-declarations: 0 */
 
-
 var hash = require("object-hash");
 
 var log = qx.tool.utils.LogManager.createLog("analyzer");
@@ -175,6 +174,9 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
     /** @type{qx.tool.compiler.Maker} */
     __maker: null,
 
+    /** @type{qx.tool.compiler.Compiler} */
+    __compiler: null,
+
     __opened: false,
     __resManager: null,
     __dbFilename: null,
@@ -182,7 +184,7 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
 
     /**
      * Key is class name, value is DbClassInfo
-     * @type {Object<string, qx.tool.compiler.Controller.DbClassInfo>}
+     * @type {Object<string, qx.tool.compiler.Compiler.DbClassInfo>}
      */
     __cachedClassInfo: null,
 
@@ -196,6 +198,7 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
      * @type {String[]}
      */
     __classes: null,
+
     /**
      * @type {qx.tool.utils.IndexedArray}
      */
@@ -214,7 +217,7 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
     __classFileConfig: null,
 
     /**
-     * 
+     *
      * @returns {qx.tool.compiler.ClassFileConfig}
      */
     getClassFileConfig() {
@@ -247,19 +250,11 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
       return p;
     },
 
-    setController(controller) {
-      this.__controller = controller;
-    },
-
-    getController() {
-      return this.__controller;
-    },
-
     /**
      * Returns a prefix that is unique to a particular class,
      * used for mangling privates.
-     * 
-     * @param {string} classname 
+     *
+     * @param {string} classname
      * @returns {string}
      */
     getManglePrefix(classname) {
@@ -354,7 +349,7 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
      * Returns the DbClassInfo for a given classname, this is only valid after `analyzeClasses()` has been called
      *
      * @param {String} classname
-     * @returns {qx.tool.compiler.Controller.DbClassInfo} the DbClassInfo for the given classname, or null if not found
+     * @returns {qx.tool.compiler.Compiler.DbClassInfo} the DbClassInfo for the given classname, or null if not found
      */
     getDbClassInfo(classname) {
       return this.__cachedClassInfo[classname] || null;
@@ -374,25 +369,153 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
     },
 
     /**
+     * This does a fast (and incomplete) analysis of the classes and their dependencies
+     * to determine the minimal set of classes that must be compiled.  The list of classes
+     * is taken from the meta data, but the meta data does not (and cannot) provide a complete
+     * list because it does not read the code inside methods.  The full set of dependencies
+     * can only be determined by compiling the classes, but this method allows the compiler to
+     * get started with multiple threads and then
+     */
+    getInitialDependentClasses() {
+      let metaDb = this.__compiler.getMetaDb();
+      let classes = [];
+      let classesByClassname = {};
+
+      const requireClass = classname => {
+        if (classesByClassname[classname]) {
+          return;
+        }
+        classesByClassname[classname] = true;
+        classes.push(classname);
+      };
+
+      let stackDepth = 0;
+      const addType = str => {
+        if (qx.lang.Type.isArray(str)) {
+          str.forEach(addType);
+          return;
+        }
+        if (!str || typeof str != "string") {
+          return;
+        }
+        stackDepth++;
+        if (stackDepth > 100) {
+          throw new Error("Maximum stack depth exceeded");
+        }
+        try {
+          let pos = str.indexOf("|");
+          if (pos != -1) {
+            let parts = str.split("|");
+            parts.forEach(addType);
+            return;
+          }
+          pos = str.indexOf("<");
+          if (pos == -1) {
+            requireClass(str);
+            return;
+          }
+          let base = str.substring(0, pos);
+          let lastPos = str.lastIndexOf(">");
+          let generic = str.substring(pos + 1, lastPos < 0 ? str.length : lastPos);
+          requireClass(base);
+          addType(generic);
+        } finally {
+          stackDepth--;
+        }
+      };
+
+      const scanMethods = methods => {
+        for (let memberName in methods) {
+          let member = methods[memberName];
+          if (member.params) {
+            for (let param of member.params) {
+              if (param.type) {
+                addType(param.type);
+              }
+            }
+          }
+          if (member.returnType && member.returnType.type) {
+            addType(member.returnType.type);
+          }
+          if (member.jsdoc && member.jsdoc["@type"]) {
+            let str = member.jsdoc["@type"];
+            let pos = str.indexOf("{");
+            let endPos = str.indexOf("}");
+            if (pos != -1 && endPos != -1 && endPos > pos) {
+              let typeStr = str.substring(pos + 1, endPos);
+              addType(typeStr);
+            }
+          }
+        }
+      };
+
+      // List of classes to compile; this will extend as we analyze
+      for (let classname of this.__initialClassesToScan.toArray()) {
+        requireClass(classname);
+      }
+
+      for (let i = 0; i < classes.length; i++) {
+        let classMeta = metaDb.getClassMeta(classes[i]);
+        if (!classMeta) {
+          qx.lang.Array.removeAt(classes, i--);
+          continue;
+        }
+        let meta = classMeta.getMetaData();
+        if (meta.superClass) {
+          requireClass(meta.superClass);
+        }
+        if (meta.interfaces) {
+          for (let iface of meta.interfaces) {
+            requireClass(iface);
+          }
+        }
+        if (meta.mixins) {
+          for (let mixin of meta.mixins) {
+            requireClass(mixin);
+          }
+        }
+        if (meta.members) {
+          scanMethods(meta.members);
+        }
+        if (meta.statics) {
+          scanMethods(meta.statics);
+        }
+        if (meta.uses) {
+          for (let use of meta.uses) {
+            requireClass(use);
+          }
+        }
+      }
+
+      return classes;
+    },
+
+    /**
      * Parses all the source files recursively until all classes and all
      * dependent classes are loaded
      */
     async analyzeClasses() {
       this.__db ??= {};
 
+      // Bootstrap the list of classes to compile with the initial set of classes, and then
+      let initialDependentClasses = this.getInitialDependentClasses();
+      for (let classname of initialDependentClasses) {
+        this.__compiler.compileClass(this, classname);
+      }
+
       // Cache of compiled classes info
       this.__cachedClassInfo = {};
 
       /**
        * @param {String} classname
-       * @return {Promise<qx.tool.compiler.Controller.DbClassInfo>}
+       * @return {Promise<qx.tool.compiler.Compiler.DbClassInfo>}
        * @param {Boolean} sync Forces to return synchronously. Class must have been compiled already.
        * Compiles a class and caches it
        */
       const compileClass = (classname, sync) => {
         let value = this.__cachedClassInfo[classname];
         if (value === undefined) {
-          value = this.__controller.compileClass(this, classname).then(v => (this.__cachedClassInfo[classname] = v));
+          value = this.__compiler.compileClass(this, classname).then(v => (this.__cachedClassInfo[classname] = v));
           this.__cachedClassInfo[classname] = value;
         }
         if (qx.core.Environment.get("qx.debug")) {
@@ -462,7 +585,7 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
         let dbClassInfo = await compileClass(classname);
         if (!dbClassInfo) {
           return; //This means class failed to compile. Assume the error has already been handled.
-        };
+        }
         if (dbClassInfo?.dependsOn) {
           Object.keys(dbClassInfo.dependsOn).forEach(depName => ensureProcessed(depName));
         }
@@ -881,7 +1004,8 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
       }
 
       // then check if compiler version is the same
-      if (db.compilerVersion !== qx.tool.config.Utils.getCompilerVersion()) {
+      let qxVersion = qx.core.Environment.get("qx.version");
+      if (db.compilerVersion !== qxVersion) {
         return true;
       }
 
@@ -902,8 +1026,7 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
         const currentLibraryKeys = Object.keys(currentLibraries).sort();
 
         // Check if a library was added or removed
-        if (dbLibraryKeys.length !== currentLibraryKeys.length ||
-            !dbLibraryKeys.every((key, index) => key === currentLibraryKeys[index])) {
+        if (dbLibraryKeys.length !== currentLibraryKeys.length || !dbLibraryKeys.every((key, index) => key === currentLibraryKeys[index])) {
           return true;
         }
 
@@ -936,11 +1059,34 @@ qx.Class.define("qx.tool.compiler.Analyzer", {
 
       db.libraries = libraries;
       db.environmentHash = this.__environmentHash;
-      db.compilerVersion = qx.tool.config.Utils.getCompilerVersion();
+      db.compilerVersion = qx.core.Environment.get("qx.version");
     },
 
+    /**
+     * The Maker for this application
+     *
+     * @returns {qx.tool.compiler.Maker}
+     */
     getMaker() {
       return this.__maker;
+    },
+
+    /**
+     * The Compiler that is running the show
+     *
+     * @param {qx.tool.compiler.Compiler} compiler
+     */
+    setCompiler(compiler) {
+      this.__compiler = compiler;
+    },
+
+    /**
+     * Returns the Compiler that is running the show
+     *
+     * @returns {qx.tool.compiler.Compiler}
+     */
+    getCompiler() {
+      return this.__compiler;
     }
   }
 });

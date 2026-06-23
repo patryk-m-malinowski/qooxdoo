@@ -25,12 +25,15 @@ const path = require("upath");
 
 /**
  * ClassMeta is used to load and save the metadata for a class.
+ *
+ * @ignore(TextEncoder)
+ * @ignore(SharedArrayBuffer)
  */
 qx.Class.define("qx.tool.compiler.meta.ClassMeta", {
   extend: qx.core.Object,
 
   /**
-   * 
+   *
    * @param {string} metaRootDir Root directory of meta database
    * @param {string} libraryPath Path of the source files of the library that this file is found in
    */
@@ -52,18 +55,16 @@ qx.Class.define("qx.tool.compiler.meta.ClassMeta", {
   },
 
   members: {
-    /**
-     * @type {qx.tool.compiler.meta.StdClassParser.MetaData} 
-     * the parsed data
-     */
+    /** @type {qx.tool.compiler.meta.StdClassParser.MetaData} the parsed data */
     __metaData: null,
-    /**
-     * True if this object was created from a native object and is read-only
-     */
+
+    /** @type{SharedArrayBuffer?} the serialized form of the meta data */
+    __sharedBufferMetaData: null,
+
+    /** @type{Boolean} True if this object was created from a native object and is read-only */
     __readOnly: false,
-    /**
-     * @type {String} path of the library where the class file is located
-     */
+
+    /** @type {String} path of the library where the class file is located */
     __libraryPath: null,
 
     /**
@@ -73,6 +74,7 @@ qx.Class.define("qx.tool.compiler.meta.ClassMeta", {
      */
     async loadMeta(filename) {
       let metaData = await qx.tool.utils.Json.loadJsonAsync(filename);
+      this.__sharedBufferMetaData = null;
       if (metaData?.version === qx.tool.compiler.meta.StdClassParser.VERSION) {
         this.__metaData = metaData;
       } else {
@@ -90,6 +92,14 @@ qx.Class.define("qx.tool.compiler.meta.ClassMeta", {
       await qx.tool.utils.Json.saveJsonAsync(filename, this.__metaData);
     },
 
+    setMetaData(metaData) {
+      if (this.__readOnly) {
+        throw new Error("Cannot set meta data on a read-only ClassMeta");
+      }
+      this.__metaData = metaData;
+      this.__sharedBufferMetaData = null;
+    },
+
     /**
      * Returns the actual meta data
      *
@@ -97,6 +107,25 @@ qx.Class.define("qx.tool.compiler.meta.ClassMeta", {
      */
     getMetaData() {
       return this.__metaData;
+    },
+
+    /**
+     * Returns the meta data as a SharedArrayBuffer, which can be shared with worker threads without copying; returns null if there is no meta data
+     *
+     * @returns {SharedArrayBuffer?} the meta data as a SharedArrayBuffer
+     */
+    getSharedBufferMetaData() {
+      if (this.__sharedBufferMetaData) {
+        return this.__sharedBufferMetaData;
+      }
+      if (!this.__metaData) {
+        return null;
+      }
+      let encoded = new TextEncoder().encode(JSON.stringify(this.__metaData));
+      let sharedBufferMetaData = new SharedArrayBuffer(encoded.byteLength);
+      new Uint8Array(sharedBufferMetaData).set(encoded);
+      this.__sharedBufferMetaData = sharedBufferMetaData;
+      return this.__sharedBufferMetaData;
     },
 
     /**
@@ -128,15 +157,9 @@ qx.Class.define("qx.tool.compiler.meta.ClassMeta", {
      * @return {qx.tool.compiler.meta.StdClassParser.MetaData}
      */
     async parse(classFilename) {
-      classFilename = await qx.tool.utils.files.Utils.correctCase(
-        classFilename
-      );
+      classFilename = await qx.tool.utils.files.Utils.correctCase(classFilename);
       let parser = new qx.tool.compiler.meta.StdClassParser();
-      this.__metaData = await parser.parse(
-        this.getMetaRootDir() || ".",
-        this.__libraryPath,
-        classFilename
-      );
+      this.__metaData = await parser.parse(this.getMetaRootDir() || ".", this.__libraryPath, classFilename);
       return this.__metaData;
     },
 
@@ -214,7 +237,7 @@ qx.Class.define("qx.tool.compiler.meta.ClassMeta", {
 
   statics: {
     /**
-     * @param {Object} obj 
+     * @param {Object} obj
      * @returns {qx.tool.compiler.meta.ClassMeta}
      */
     fromNativeObject(obj) {

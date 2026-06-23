@@ -2,9 +2,9 @@ qx.Class.define("qx.tool.compiler.feedback.ConsoleFeedback", {
   extend: qx.core.Object,
 
   /**
-   * @param {qx.tool.compiler.Controller} controller
+   * @param {qx.tool.compiler.Compiler} compiler
    */
-  construct(controller) {
+  construct(compiler) {
     super();
     this.__classStartTimes = {};
 
@@ -23,42 +23,42 @@ qx.Class.define("qx.tool.compiler.feedback.ConsoleFeedback", {
     };
 
     start("overall");
-    controller.addListener("starting", () => start("controller"));
-    controller.addListener("metaDbLoaded", () => report("controller", "Controller - Meta Database Loaded"));
-    controller.addListener("discoveryStarted", () => report("controller", "Controller - Discovery Started"));
-    controller.addListener("metaDbConfiguring", () => report("controller", "Controller - Meta Database Configuring"));
-    controller.addListener("metaDbConfigured", () => report("controller", "Controller - Meta Database Configured"));
-    controller.addListener("addedDiscoveredClasses", () => report("controller", "Controller - Add Discovered Classes"));
-    controller.addListener("writtenMetaData", () => report("controller", "Controller - Writing meta data"));
-    controller.addListener("started", () => {
+    compiler.addListener("starting", () => start("controller"));
+    compiler.addListener("metaDbLoaded", () => report("controller", "Controller - Meta Database Loaded"));
+    compiler.addListener("discoveryStarted", () => report("controller", "Controller - Discovery Started"));
+    compiler.addListener("metaDbConfiguring", () => report("controller", "Controller - Meta Database Configuring"));
+    compiler.addListener("metaDbConfigured", () => report("controller", "Controller - Meta Database Configured"));
+    compiler.addListener("addedDiscoveredClasses", () => report("controller", "Controller - Add Discovered Classes"));
+    compiler.addListener("writtenMetaData", () => report("controller", "Controller - Writing meta data"));
+    compiler.addListener("started", () => {
       report("controller", "Controller - First compile");
       report("overall", "Overall Startup");
     });
-    controller.getMetaDb().addListener("starting", () => start("metaDb"));
-    controller.getMetaDb().addListener("started", () => report("metaDb", "Meta Database"));
-    controller.getDiscovery().addListener("starting", () => start("discovery"));
-    controller.getDiscovery().addListener("started", () => report("discovery", "File Discovery"));
+    compiler.getMetaDb().addListener("starting", () => start("metaDb"));
+    compiler.getMetaDb().addListener("started", () => report("metaDb", "Meta Database"));
+    compiler.getDiscovery().addListener("starting", () => start("discovery"));
+    compiler.getDiscovery().addListener("started", () => report("discovery", "File Discovery"));
 
-    controller.addListener("changesDetected", () => {
+    compiler.addListener("changesDetected", () => {
       qx.tool.compiler.Console.log("Changes detected, recompiling...");
     });
 
     let watchStartMsgSent = false;
-    controller.addListener("allMakersMade", () => {
+    compiler.addListener("allMakersMade", () => {
       qx.tool.compiler.Console.log("All applications ready.");
-      if (!watchStartMsgSent && controller.isWatch()) {
+      if (!watchStartMsgSent && compiler.isWatch()) {
         watchStartMsgSent = true;
         qx.tool.compiler.Console.log("Start watching for changes...");
       }
     });
 
-    controller.addListener("classNeedsToBeCompiled", this.__onClassNeedsToBeCompiled, this);
-    controller.addListener("compilingClass", this.__onCompilingClass, this);
-    controller.addListener("compiledClass", this.__onCompiledClass, this);
-    controller.getDiscovery().addListener("fileAdded", this.__onFileAdded, this);
-    controller.getDiscovery().addListener("fileRemoved", this.__onFileRemoved, this);
-    controller.getDiscovery().addListener("fileChanged", this.__onFileChanged, this);
-    controller.addListener("addMaker", this.__onAddMaker, this);
+    compiler.addListener("classNeedsToBeCompiled", this.__onClassNeedsToBeCompiled, this);
+    compiler.addListener("compilingClass", this.__onCompilingClass, this);
+    compiler.addListener("compiledClass", this.__onCompiledClass, this);
+    compiler.getDiscovery().addListener("fileAdded", this.__onFileAdded, this);
+    compiler.getDiscovery().addListener("fileRemoved", this.__onFileRemoved, this);
+    compiler.getDiscovery().addListener("fileChanged", this.__onFileChanged, this);
+    compiler.addListener("addMaker", this.__onAddMaker, this);
   },
 
   members: {

@@ -19,6 +19,7 @@ const path = require("upath");
 const fs = require("fs");
 const child_process = require("child_process");
 const psTree = require("ps-tree");
+
 /**
  * @ignore(process)
  */
@@ -30,6 +31,37 @@ qx.Class.define("qx.tool.utils.Utils", {
   extend: qx.core.Object,
 
   statics: {
+    /**
+     * Does a semver satisifies check, ignoring any prerelease tags on the version
+     *
+     * @param {String} version
+     * @param {String} range
+     * @returns {Boolean}
+     */
+    versionSatisfies(version, range, options) {
+      let m = version.match(/^([0-9]+\.[0-9]+\.[0-9]+)-.*/);
+      if (m) {
+        version = m[1];
+      }
+      const semver = require("semver");
+      return semver.satisfies(version, range, options);
+    },
+
+    /**
+     * Does a semver valid check, ignoring any prerelease tags on the version
+     *
+     * @param {String} version
+     * @returns {Boolean}
+     */
+    versionValid(version) {
+      let m = version.match(/^([0-9]+\.[0-9]+\.[0-9]+)(-.+)?$/);
+      if (m) {
+        version = m[1];
+      }
+      const semver = require("semver");
+      return semver.valid(version) != null;
+    },
+
     /**
      * Creates a Promise which can be resolved/rejected externally - it has
      * the resolve/reject methods as properties
@@ -121,7 +153,6 @@ qx.Class.define("qx.tool.utils.Utils", {
       await fs.promises.mkdir(dir, { recursive: true });
     },
 
-
     /**
      * Writable stream that keeps track of what the current line number is
      */
@@ -166,6 +197,54 @@ qx.Class.define("qx.tool.utils.Utils", {
       return false;
     },
 
+    spawnProcess(cmd, args, options) {
+      options = options || {};
+
+      if (!options.error) {
+        options.error = console.error;
+      }
+      if (!options.log) {
+        options.log = console.log;
+      }
+
+      let env = process.env;
+      if (options.env) {
+        env = Object.assign({}, env);
+        Object.assign(env, options.env);
+      }
+
+      // Use String array for arguments - no shell needed
+      let proc = child_process.spawn(cmd, args || [], {
+        cwd: options.cwd,
+        shell: options.shell === true, // Only use shell if explicitly requested
+        env: env
+      });
+
+      proc.stdout.on("data", data => {
+        data = data.toString().trim();
+        options.log(data);
+        if (options.onConsole) {
+          options.onConsole(data, "stdout");
+        }
+      });
+      proc.stderr.on("data", data => {
+        data = data.toString().trim();
+        options.error(data);
+        if (options.onConsole) {
+          options.onConsole(data, "stderr");
+        }
+      });
+      proc.on("close", code => {
+        if (options.onClose) {
+          options.onClose(code);
+        }
+      });
+      proc.on("error", err => {
+        if (options.onError) {
+          options.onError(err);
+        }
+      });
+    },
 
     /**
      * Runs the given command and returns an object containing information on the
@@ -200,26 +279,8 @@ qx.Class.define("qx.tool.utils.Utils", {
           options.args = args;
         }
       }
-      if (!options.error) {
-        options.error = console.error;
-      }
-      if (!options.log) {
-        options.log = console.log;
-      }
-      return await new Promise((resolve, reject) => {
-        let env = process.env;
-        if (options.env) {
-          env = Object.assign({}, env);
-          Object.assign(env, options.env);
-        }
-        
-        // Use String array for arguments - no shell needed
-        let proc = child_process.spawn(options.cmd, options.args || [], {
-          cwd: options.cwd,
-          shell: options.shell === true, // Only use shell if explicitly requested
-          env: env
-        });
 
+      return await new Promise((resolve, reject) => {
         let result = {
           exitCode: null,
           output: "",
@@ -227,23 +288,24 @@ qx.Class.define("qx.tool.utils.Utils", {
           messages: null
         };
 
-        proc.stdout.on("data", data => {
-          data = data.toString().trim();
-          options.log(data);
-          result.output += data;
-        });
-        proc.stderr.on("data", data => {
-          data = data.toString().trim();
-          options.error(data);
-          result.error += data;
-        });
-        proc.on("close", code => {
+        options.onConsole = (data, type) => {
+          if (type == "stdout") {
+            result.output += data;
+          } else {
+            result.error += data;
+          }
+        };
+
+        options.onClose = code => {
           result.exitCode = code;
           resolve(result);
-        });
-        proc.on("error", err => {
+        };
+        options.onError = err => {
           reject(err);
-        });
+        };
+
+        // Use String array for arguments - no shell needed
+        qx.tool.utils.Utils.spawnProcess(options.cmd, options.args || [], options);
       });
     },
 
@@ -418,9 +480,7 @@ qx.Class.define("qx.tool.utils.Utils", {
      * @return {String}
      */
     getTemplateDir() {
-      let dir = qx.util.ResourceManager.getInstance().toUri(
-        "qx/tool/compiler/cli/templates/template_vars.js"
-      );
+      let dir = qx.util.ResourceManager.getInstance().toUri("qx/tool/compiler/cli/templates/template_vars.js");
 
       dir = path.dirname(dir);
       return dir;

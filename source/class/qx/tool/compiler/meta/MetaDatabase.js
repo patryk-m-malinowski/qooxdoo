@@ -27,21 +27,25 @@ const path = require("upath");
  * MetaDatabase is used to store the metadata for all classes in a qooxdoo compilation;
  * it covers all classes in all libraries, and has scope to incorporate pre-compilers
  * in the future.
- * 
+ *
  * @typedef {Object} Database
  * @property {string[]} classnames List of all class names in the database
+ *
+ * @ignore(TextEncoder)
+ * @ignore(SharedArrayBuffer)
+ * @ignore(TextDecoder)
  */
 qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
   extend: qx.core.Object,
 
-  construct() {
+  construct(jobQueue) {
     super();
-    this.__metaByClassname = {};
+    this.__jobQueue = jobQueue;
+    this.__classMetasByClassname = {};
     this.__metaByFilename = {};
     this.__packages = {};
     this.__dirtyClasses = {};
     this.__database = {};
-    this.__lastSerialized = 0;
   },
 
   properties: {
@@ -57,17 +61,18 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
     starting: "qx.event.type.Event",
 
     /** Fired when the database has loaded and is ready for use */
-    started: "qx.event.type.Event"
+    started: "qx.event.type.Event",
+
+    /** Fired when a class meta has been parsed, data is `qx.tool.compiler.meta.ClassMeta` */
+    classMetaParsed: "qx.event.type.Data"
   },
 
   members: {
-    /**
-     * @type {Boolean} whether the database is read-only. This is the case if loaded from serialized form.
-     */
-    __readOnly: false,
+    /** @type{qx.tool.worker.JobQueue} the job queue */
+    __jobQueue: null,
 
     /** @type {Object<String,qx.tool.compiler.meta.ClassMeta>} list of meta indexed by classname */
-    __metaByClassname: null,
+    __classMetasByClassname: null,
 
     /**
      * @type {Object<String,boolean>} list of all packages
@@ -77,45 +82,19 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
     /** @type {Object<String,Boolean>} list of classes which need to have their second pass */
     __dirtyClasses: null,
 
-    /** 
-     * @type {Database} 
-     * The database 
+    /**
+     * @type {Database}
+     * The database
      */
     __database: null,
-
-    /**
-     * @type {number?} Unix timestamp of the last time the database was serialized using `__updateSerialized`
-     */
-    __lastSerialized: null,
-
-    /**
-     * @type {SharedArrayBuffer?} serialized form of the database.
-     * This is necessary in order to provide the meta database to compilation worker threads
-     * in an efficient way which does not involve copying large amounts of data.
-     * 
-     * The meta database is serialized when it's saved or loaded.
-     * We can deserialize it in worker threads using the static method `deserialize`.
-     * The deserialized reconstructed metadatabase will be read-only and not have functionalities like addFile, save, or load.
-     */
-    __serialized: null,    
-
 
     /**
      * Saves the database
      */
     async save() {
       await fs.promises.mkdir(this.getRootDir(), { recursive: true });
-      this.__database.classnames = Object.keys(this.__metaByClassname);
+      this.__database.classnames = Object.keys(this.__classMetasByClassname);
       await qx.tool.utils.Json.saveJsonAsync(this.getRootDir() + "/db.json", this.__database);
-      this.__updateSerialized();
-    },
-
-    /**
-     * 
-     * @returns {number?} Unix timestamp of the last time the database was serialized.
-     */
-    getLastSerialized() {
-      return this.__lastSerialized;
     },
 
     /**
@@ -153,7 +132,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
       this.fireEvent("starting");
       let filename = this.getRootDir() + "/db.json";
       if (fs.existsSync(filename)) {
-        this.__metaByClassname = {};
+        this.__classMetasByClassname = {};
         this.__metaByFilename = {};
         this.__packages = {};
         this.__dirtyClasses = {};
@@ -163,56 +142,29 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
         let classnamesToLoad = data.classnames || [];
         delete data.classnames;
         //2026-JAN-15 - I don't think we need to limit concurrency here? - NodeJs should be able to handle loads of parallel disk IO operations
-        await Promise.all(classnamesToLoad.map(async classname => {
-          let segs = classname.split(".");
-          
-          for (let i = 0; i < segs.length - 1; i++) {
-            let seg = segs.slice(0, i + 1).join(".");
-            this.__packages[seg] = true;
-          }
-          let filename = this.getRootDir() + "/" + classname.replace(/\./g, "/") + ".json";
-          if (fs.existsSync(filename)) {
-            let metaReader = new qx.tool.compiler.meta.ClassMeta(this.getRootDir());
-            await metaReader.loadMeta(filename);
-            if (!await metaReader.isOutOfDate()) {
-              this.__metaByClassname[classname] = metaReader;
-              let classFilename = metaReader.getMetaData().classFilename;
-              classFilename = path.resolve(path.join(this.getRootDir(), classFilename));
-              this.__metaByFilename[classFilename] = metaReader;
+        await Promise.all(
+          classnamesToLoad.map(async classname => {
+            let segs = classname.split(".");
+
+            for (let i = 0; i < segs.length - 1; i++) {
+              let seg = segs.slice(0, i + 1).join(".");
+              this.__packages[seg] = true;
             }
-          }
-        }));
+            let filename = this.getRootDir() + "/" + classname.replace(/\./g, "/") + ".json";
+            if (fs.existsSync(filename)) {
+              let metaReader = new qx.tool.compiler.meta.ClassMeta(this.getRootDir());
+              await metaReader.loadMeta(filename);
+              if (!(await metaReader.isOutOfDate())) {
+                this.__classMetasByClassname[classname] = metaReader;
+                let classFilename = metaReader.getMetaData().classFilename;
+                classFilename = path.resolve(path.join(this.getRootDir(), classFilename));
+                this.__metaByFilename[classFilename] = metaReader;
+              }
+            }
+          })
+        );
       }
-      this.__updateSerialized();
       this.fireEvent("started");
-    },
-
-    /**
-     * 
-     * @returns {SharedArrayBuffer} A serialized form of the database, useful for passing efficiently to node workers.
-     * The MetaDataBase object can then be reconstructed using the static method `deserialize`.
-     */
-    getSerialized() {
-      return this.__serialized;
-    },
-
-    /**
-     * Updates the serialized form of the database
-     * @returns {SharedArrayBuffer} The updated serialized form
-     */
-    __updateSerialized() {
-      let pojo ={
-        metaByClassname: qx.lang.Object.map(this.__metaByClassname, meta => meta.getMetaData()),
-        packages: this.__packages,
-        environmentChecks: this.__database.environmentChecks || {}
-      };
-      
-      let encoded = new TextEncoder().encode(JSON.stringify(pojo));
-      let sab = new SharedArrayBuffer(encoded.byteLength);
-      new Uint8Array(sab).set(encoded);
-
-      this.__lastSerialized = Date.now();
-      return this.__serialized = sab;
     },
 
     /**
@@ -254,7 +206,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
 
       if (packageName) {
         pos = type.indexOf(".");
-        if (pos < 0 && this.__metaByClassname[packageName + "." + type]) {
+        if (pos < 0 && this.__classMetasByClassname[packageName + "." + type]) {
           return packageName + "." + type;
         }
       }
@@ -273,7 +225,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
       let addMetaResults = await Promise.all(
         files.map(filename => {
           if (!this.__metaByFilename[filename]) {
-            return this.addFile(filename, true);
+            return this.addFile(filename);
           } else {
             return true;
           }
@@ -292,38 +244,51 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
      * @returns {Promise<boolean>} False if there were any fundamental user errors in the project code (e.g. syntax errors), true otherwise
      */
     async addFile(filename, force) {
+      if (filename.match(/__init__/)) {
+        return;
+      }
       filename = await qx.tool.utils.files.Utils.correctCase(filename);
       filename = path.resolve(filename);
-      let meta = this.__metaByFilename[filename];
-      if (meta && !force && !(await meta.isOutOfDate())) {
+      let classMeta = this.__metaByFilename[filename];
+      if (classMeta && !force && !(await classMeta.isOutOfDate())) {
         return true;
       }
 
       let libraries = Object.values(this.getDatabase().libraries || {}).map(l => l.sourceDir);
       let libraryPath = libraries.find(l => filename.startsWith(l));
 
-      meta = new qx.tool.compiler.meta.ClassMeta(this.getRootDir(), libraryPath);
+      classMeta = new qx.tool.compiler.meta.ClassMeta(this.getRootDir(), libraryPath);
+      let classFilename = await qx.tool.utils.files.Utils.correctCase(filename);
 
       try {
-        var metaData = await meta.parse(filename);
+        let existingCompile = this.__jobQueue.addJob(
+          qx.tool.compiler.meta.IStdClassParser,
+          "parse",
+          this.getRootDir(),
+          libraryPath,
+          classFilename
+        );
+        let metaData = await existingCompile.promiseComplete;
+        classMeta.setMetaData(metaData);
+        let classname = metaData.className;
+        if (metaData.className === undefined) {
+          //This may seem like an error, but we do have files which don't define classes, e.g. packages' __init__.js
+          return true;
+        }
+        this.__classMetasByClassname[metaData.className] = classMeta;
+        this.__metaByFilename[filename] = classMeta;
+        this.__dirtyClasses[metaData.className] = true;
+
+        let segs = classname.split(".");
+        for (let i = 0; i < segs.length - 1; i++) {
+          let seg = segs.slice(0, i + 1).join(".");
+          this.__packages[seg] = true;
+        }
+
+        this.fireDataEvent("classMetaParsed", classMeta);
       } catch (ex) {
         qx.tool.compiler.Console.error("Failed to parse meta data for file " + filename + ": " + ex.message);
         return false;
-      }
-
-      let classname = metaData.className;
-      if (metaData.className === undefined) {
-        //This may seem like an error, but we do have files which don't define classes, e.g. packages' __init__.js
-        return true;
-      }
-      this.__metaByClassname[metaData.className] = meta;
-      this.__metaByFilename[filename] = meta;
-      this.__dirtyClasses[metaData.className] = true;
-
-      let segs = classname.split(".");
-      for (let i = 0; i < segs.length - 1; i++) {
-        let seg = segs.slice(0, i + 1).join(".");
-        this.__packages[seg] = true;
       }
 
       return true;
@@ -340,7 +305,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
       let meta = this.__metaByFilename[filename];
       if (meta) {
         let classname = meta.getMetaData().className;
-        delete this.__metaByClassname[classname];
+        delete this.__classMetasByClassname[classname];
         delete this.__metaByFilename[filename];
         delete this.__dirtyClasses[classname];
       }
@@ -352,17 +317,27 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
      * @return {String[]}
      */
     getClassnames() {
-      return Object.keys(this.__metaByClassname);
+      return Object.keys(this.__classMetasByClassname);
     },
 
     /**
      * Returns the meta data for a class
      *
      * @param {String} className
-     * @returns {qx.tool.compiler.meta.StdClassParser.MetaData=}
+     * @returns {qx.tool.compiler.meta.StdClassParser.MetaData}
      */
     getMetaData(className) {
-      return this.__metaByClassname[className]?.getMetaData() || null;
+      return this.__classMetasByClassname[className]?.getMetaData() || null;
+    },
+
+    /**
+     * Returns the ClassMeta for a class
+     *
+     * @param {String} className
+     * @returns {qx.tool.compiler.meta.ClassMeta}
+     */
+    getClassMeta(className) {
+      return this.__classMetasByClassname[className] || null;
     },
 
     /**
@@ -371,7 +346,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
      * @property {Boolean?} startsWith - if true, then the matchString is a prefix otherwise it is an exact match
      * @property {String} className - the name of the class that the check is for
      *
-     * @returns {EnvironmentCheck[]} the environment checks
+     * @returns {Object<String, EnvironmentCheck>} the environment checks
      */
     getEnvironmentChecks() {
       return this.__database.environmentChecks || {};
@@ -389,7 +364,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
      * @returns {SymbolType}
      */
     getSymbolType(name) {
-      var classInfo = this.__metaByClassname[name];
+      var classInfo = this.__classMetasByClassname[name];
       var packageInfo = this.__packages[name];
 
       if (classInfo || packageInfo) {
@@ -435,7 +410,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
       while (segs.length > 1) {
         segs.pop();
         let tmpname = segs.join(".");
-        classInfo = this.__metaByClassname[tmpname];
+        classInfo = this.__classMetasByClassname[tmpname];
         if (classInfo) {
           return {
             symbolType: "member",
@@ -453,7 +428,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
      * @returns {Object<String, qx.tool.compiler.meta.ClassMeta>} map of class name to ClassMeta
      */
     getMetaByClassname() {
-      return this.__metaByClassname;
+      return this.__classMetasByClassname;
     },
 
     /**
@@ -477,25 +452,28 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
         }
       }
 
-      await Promise.all(classnames.map(async className => {
-        let metaReader = this.__metaByClassname[className];
-        let metaData = metaReader.getMetaData();
+      await Promise.all(
+        classnames.map(async className => {
+          let metaReader = this.__classMetasByClassname[className];
+          let metaData = metaReader.getMetaData();
 
-        const typeResolver = {
-          resolveType: this.resolveType.bind(this, metaData)
-        };
+          const typeResolver = {
+            resolveType: this.resolveType.bind(this, metaData)
+          };
 
-        metaReader.fixupJsDoc(typeResolver);
+          metaReader.fixupJsDoc(typeResolver);
 
-        this.__fixupMembers(metaData);
+          this.__fixupMembers(metaData);
 
-        this.__fixupEntries(metaData, "members");
-        this.__fixupEntries(metaData, "statics");
-        this.__fixupEntries(metaData, "properties");
+          this.__fixupEntries(metaData, "members");
+          this.__fixupEntries(metaData, "statics");
+          this.__fixupEntries(metaData, "properties");
 
-        let filename = this.getRootDir() + "/" + className.replace(/\./g, "/") + ".json";
-        await metaReader.saveMeta(filename);
-      }));
+          let filename = this.getRootDir() + "/" + className.replace(/\./g, "/") + ".json";
+          await metaReader.saveMeta(filename);
+        })
+      );
+      await this.save();
     },
 
     /**
@@ -509,9 +487,9 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
         lookup[key].add(item);
       };
 
-      for (let classname in this.__metaByClassname) {
+      for (let classname in this.__classMetasByClassname) {
         lookup[classname] ??= new Set(); // ensuring this makes operations with the lookup simpler
-        let metaData = this.__metaByClassname[classname].getMetaData();
+        let metaData = this.__classMetasByClassname[classname].getMetaData();
         if (metaData.superClass) {
           add(metaData.superClass, classname);
         }
@@ -545,7 +523,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
       }
       if (metaData.mixins) {
         for (let mixinName of metaData.mixins) {
-          let mixinMeta = this.__metaByClassname[mixinName];
+          let mixinMeta = this.__classMetasByClassname[mixinName];
           if (mixinMeta) {
             let mixinMetaData = mixinMeta.getMetaData();
             let method = mixinMetaData.members?.[methodName];
@@ -560,7 +538,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
       if (!metaData.superClass) {
         return null;
       }
-      let superMetaReader = this.__metaByClassname[metaData.superClass];
+      let superMetaReader = this.__classMetasByClassname[metaData.superClass];
       if (superMetaReader) {
         return this.__findSuperMethod(superMetaReader.getMetaData(), methodName, false);
       }
@@ -574,11 +552,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
      * @returns {string[]} list of classes where the entry appears
      */
     __findAppearances(metaData, entryKind, entryName) {
-      const getSuperLikes = meta => [
-        ...(meta.mixins ?? []),
-        ...(meta.superClass ? [meta.superClass] : []),
-        ...(meta.interfaces ?? [])
-      ];
+      const getSuperLikes = meta => [...(meta.mixins ?? []), ...(meta.superClass ? [meta.superClass] : []), ...(meta.interfaces ?? [])];
 
       const resolve = meta => {
         if (meta[entryKind]?.[entryName]) {
@@ -589,7 +563,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
       const appearances = [];
       const toResolve = getSuperLikes(metaData);
       while (toResolve.length) {
-        const currentMeta = this.__metaByClassname[toResolve.shift()];
+        const currentMeta = this.__classMetasByClassname[toResolve.shift()];
         if (currentMeta) {
           resolve(currentMeta.getMetaData());
           toResolve.push(...getSuperLikes(currentMeta.getMetaData()));
@@ -610,7 +584,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
       }
       if (metaData.abstract) {
         for (const itf of metaData.interfaces ?? []) {
-          const itfMembers = this.__metaByClassname[itf]?.getMetaData().members;
+          const itfMembers = this.__classMetasByClassname[itf]?.getMetaData().members;
           for (const memberName in itfMembers ?? {}) {
             const member = itfMembers[memberName];
             if (!metaData.members[memberName]) {
@@ -643,7 +617,7 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
     __fixupEntries(metaData, kind) {
       metaData[kind] ??= {};
       for (const mixin of metaData.mixins ?? []) {
-        const mixinMeta = this.__metaByClassname[mixin]?.getMetaData();
+        const mixinMeta = this.__classMetasByClassname[mixin]?.getMetaData();
         for (const name in mixinMeta?.[kind] ?? {}) {
           const appearsIn = this.__findAppearances(metaData, kind, name);
           const meta = qx.lang.Object.clone(mixinMeta[kind][name]);
@@ -710,17 +684,16 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
     },
 
     /**
-     * 
+     *
      * @param {qx.tool.compiler.meta.MetaDatabase} other
      * @returns {qx.tool.compiler.meta.MetaDatabase}
      */
-    move(other) {      
-      this.__metaByClassname = other.__metaByClassname
+    move(other) {
+      this.__classMetasByClassname = other.__classMetasByClassname;
       this.__packages = other.__packages;
       this.__database = {
         environmentChecks: other.__database.environmentChecks
       };
-      this.__readOnly = true;
       return this;
     },
 
@@ -769,26 +742,6 @@ qx.Class.define("qx.tool.compiler.meta.MetaDatabase", {
         await this.addFile(filename, options.force || false);
       }
       await this.reparseAll();
-    }
-  },
-
-  statics: {
-    /**
-     * Reconstructs the MetaDatabase from its SharedArrayBuffer representation
-     * @param {ShardArrayBuffer} buffer 
-     * @returns {qx.tool.compiler.meta.MetaDatabase}
-     */
-    deserialize(buffer) {
-      let json = new TextDecoder().decode(new Uint8Array(buffer));
-      let dataObj = JSON.parse(json);
-      let metaDb = new qx.tool.compiler.meta.MetaDatabase();
-      metaDb.__metaByClassname = qx.lang.Object.map(dataObj.metaByClassname, m => qx.tool.compiler.meta.ClassMeta.fromNativeObject(m));
-      metaDb.__packages = dataObj.packages;
-      metaDb.__database = {
-        environmentChecks: dataObj.environmentChecks
-      };
-      metaDb.__readOnly = true;
-      return metaDb;
     }
   }
 });

@@ -31,6 +31,13 @@ qx.Class.define("qx.tool.compiler.meta.Discovery", {
     started: "qx.event.type.Event"
   },
 
+  properties: {
+    watch: {
+      init: false,
+      check: "Boolean"
+    }
+  },
+
   members: {
     __started: false,
 
@@ -41,8 +48,6 @@ qx.Class.define("qx.tool.compiler.meta.Discovery", {
      * @type {Object<String, FileMeta>} list of discovered files
      */
     __discoveredFiles: null,
-
-
 
     /**
      * @typedef WatchedPath
@@ -77,42 +82,36 @@ qx.Class.define("qx.tool.compiler.meta.Discovery", {
       }
       this.fireEvent("starting");
       this.__started = true;
-      for (let filename in this.__watchedPaths) {
-        filename = path.resolve(filename);
-        let stat = null;
-        try {
-          stat = await fs.promises.stat(filename);
-        } catch (ex) {
-          if (ex.code === "ENOENT") {
+      if (this.getWatch()) {
+        for (let filename in this.__watchedPaths) {
+          filename = path.resolve(filename);
+          let stat = await qx.tool.utils.files.Utils.safeStat(filename);
+          if (!stat) {
             this.warn(`Directory ${filename} does not exist.`);
             continue;
           }
-          throw ex;
+          let watcher = chokidar.watch(filename, {
+            //ignored: /(^|[\/\\])\../
+          });
+          let watchedPath = {
+            path: filename,
+            watcher: watcher,
+            ready: false
+          };
+          this.__watchedPaths[filename] = watchedPath;
+
+          let confirmedName = filename;
+          watcher.on("change", filename => this.__onFileChange("change", filename, confirmedName));
+          watcher.on("add", filename => this.__onFileChange("add", filename, confirmedName));
+          watcher.on("unlink", filename => this.__onFileChange("unlink", filename, confirmedName));
+          watcher.on("ready", () => {
+            qx.tool.compiler.Console.logVerbose(`Start watching ${confirmedName}...`);
+            watchedPath.ready = true;
+          });
+          watcher.on("error", err => {
+            qx.tool.compiler.Console.print(err.code == "ENOSPC" ? "qx.tool.cli.watch.enospcError" : "qx.tool.cli.watch.watchError", err);
+          });
         }
-        let watcher = chokidar.watch(filename, {
-          //ignored: /(^|[\/\\])\../
-        });
-        let watchedPath = {
-          path: filename,
-          watcher: watcher,
-          ready: false
-        };
-        this.__watchedPaths[filename] = watchedPath;
-        
-        let confirmedName = filename;
-        watcher.on("change", filename => this.__onFileChange("change", filename, confirmedName));
-        watcher.on("add", filename => this.__onFileChange("add", filename, confirmedName));
-        watcher.on("unlink", filename => this.__onFileChange("unlink", filename, confirmedName));
-        watcher.on("ready", () => {
-          qx.tool.compiler.Console.logVerbose(`Start watching ${confirmedName}...`);
-          watchedPath.ready = true;
-        });
-        watcher.on("error", err => {
-          qx.tool.compiler.Console.print(
-            err.code == "ENOSPC" ? "qx.tool.cli.watch.enospcError" : "qx.tool.cli.watch.watchError",
-            err
-          );
-        });
       }
 
       // Scans a directory recursively to find all .js files
@@ -124,6 +123,9 @@ qx.Class.define("qx.tool.compiler.meta.Discovery", {
         let filenames = await fs.promises.readdir(directoryName);
         for (let i = 0; i < filenames.length; i++) {
           let filename = filenames[i];
+          if (filename.match(/__init__/i)) {
+            continue;
+          }
           let fullFilename = path.join(directoryName, filename);
           let stat = await fs.promises.stat(fullFilename);
           if (stat.isDirectory()) {
@@ -138,14 +140,22 @@ qx.Class.define("qx.tool.compiler.meta.Discovery", {
               }
               this.__discoveredFiles[fullFilename] = {
                 classname
-              }
+              };
             }
           }
         }
       };
 
-      for (let watchedPath of Object.values(this.__watchedPaths)) {
-        await scanImpl(watchedPath.path, watchedPath.path);
+      for (let filename in this.__watchedPaths) {
+        await scanImpl(filename, filename);
+      }
+      let allClassnames = {};
+      for (let filename in this.__discoveredFiles) {
+        let classname = this.__discoveredFiles[filename].classname;
+        if (allClassnames[classname]) {
+          qx.tool.compiler.Console.print("qx.tool.compiler.discovery.duplicateClassname", classname, filename, allClassnames[classname]);
+        }
+        allClassnames[classname] = filename;
       }
       this.fireEvent("started");
     },
@@ -171,7 +181,7 @@ qx.Class.define("qx.tool.compiler.meta.Discovery", {
     },
 
     /**
-     * @param {string} filename 
+     * @param {string} filename
      * @returns {string}
      */
     getClassnameForFile(filename) {

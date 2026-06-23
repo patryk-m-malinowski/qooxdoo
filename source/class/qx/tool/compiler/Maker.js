@@ -107,7 +107,7 @@ qx.Class.define("qx.tool.compiler.Maker", {
 
     /**
      * This class must implement the interface qx.tool.compiler.ISourceTransformer.
-     * 
+     *
      * If specified, the class name of the source transformer to use,
      * which will transform source code before transpilation.
      * Could be used to implement custom language features.
@@ -129,27 +129,22 @@ qx.Class.define("qx.tool.compiler.Maker", {
   },
 
   members: {
-    /**
-     * @type {qx.tool.compiler.ISourceTransformer?} instance of the source transformer
-     */
+    /** @type {qx.tool.compiler.ISourceTransformer?} instance of the source transformer */
     __transformer: undefined,
-    __initted: false,
 
-    /**
-     * @type {Object}
-     */
-    __appEnvironments: null,    
+    /** @type {Boolean} whether the maker has been initialised */
+    __initialised: false,
+
+    /** @type {Object} */
+    __appEnvironments: null,
+
     /** {Analyzer} current analyzer (created on demand) */
     _analyzer: null,
 
-    /** Lookup of classes which have been compiled this session; this is a map where the keys are
-     * the class name and the value is `true`, it is erased periodically
-     */
+    /** @type{Object<String,Boolean>} Lookup of classes which have been compiled this session */
     __compiledClasses: null,
 
-    /**
-     * @type {qx.tool.compiler.app.Application[]}
-     */
+    /** @type {qx.tool.compiler.app.Application[]} */
     __applications: null,
 
     /**
@@ -168,7 +163,7 @@ qx.Class.define("qx.tool.compiler.Maker", {
             throw new Error("Could not find transformer class: " + transformerClassname);
           }
         }
-        this.__transformer = new TransformerClass();        
+        this.__transformer = new TransformerClass();
       }
       return this.__transformer;
     },
@@ -189,19 +184,12 @@ qx.Class.define("qx.tool.compiler.Maker", {
       return this.__applications;
     },
 
-    updateProgress(type, ...args) {
-      this.getAnalyzer()
-        .getController()
-        .getProgress()
-        .update(type, ...args);
-    },
-
     /**
      * This method is called per maker when the compiler starts up.
      * It must be called before we send the class file config to the workers
      */
     async init() {
-      this.__initted = true;
+      this.__initialised = true;
       // merge all environment settings for the analyzer
       let target = this.getTarget();
       let compileEnv = qx.tool.utils.Values.merge(
@@ -297,8 +285,12 @@ qx.Class.define("qx.tool.compiler.Maker", {
      *
      */
     async make() {
+      if (this.__making) {
+        return;
+      }
+      this.__making = true;
       if (qx.core.Environment.get("qx.debug")) {
-        if (!this.__initted) {
+        if (!this.__initialised) {
           throw new Error("Maker must be initialized by calling init() before make()");
         }
       }
@@ -357,20 +349,24 @@ qx.Class.define("qx.tool.compiler.Maker", {
       let compiledClasses = this.getRecentlyCompiledClasses(true);
       let db = analyzer.getDatabase();
 
-      var appsThisTime = (await Promise.all(this.__applications.map(async app => {
-        let loadDeps = app.getDependencies();
-        if (!loadDeps || !loadDeps.length) {
-          return { application: app, analyzer, maker: this };
-        }
-        let res = loadDeps.some(name => Boolean(compiledClasses[name]));
-        let localModules = app.getLocalModules();
-        for (let requireName in localModules) {
-          let stat = await qx.tool.utils.files.Utils.safeStat(localModules[requireName]);
+      var appsThisTime = (
+        await Promise.all(
+          this.__applications.map(async app => {
+            let loadDeps = app.getDependencies();
+            if (!loadDeps || !loadDeps.length) {
+              return { application: app, analyzer, maker: this };
+            }
+            let res = loadDeps.some(name => Boolean(compiledClasses[name]));
+            let localModules = app.getLocalModules();
+            for (let requireName in localModules) {
+              let stat = await qx.tool.utils.files.Utils.safeStat(localModules[requireName]);
 
-          res ||= stat.mtime.getTime() > (db?.modulesInfo?.localModules[requireName] || 0);
-        }
-        return res ? { application: app, analyzer, maker: this } : null;
-      }))).filter(Boolean);
+              res ||= stat.mtime.getTime() > (db?.modulesInfo?.localModules[requireName] || 0);
+            }
+            return res ? { application: app, analyzer, maker: this } : null;
+          })
+        )
+      ).filter(Boolean);
 
       await this.fireDataEventAsync("writingApplications", appsThisTime);
 
@@ -420,6 +416,7 @@ qx.Class.define("qx.tool.compiler.Maker", {
       this.setSuccess(success);
       this.setHasWarnings(hasWarnings);
       await this.fireEventAsync("made");
+      this.__making = false;
     },
 
     /**
@@ -431,7 +428,7 @@ qx.Class.define("qx.tool.compiler.Maker", {
       if (pwd.startsWith(dir) && dir.length <= pwd.length) {
         throw new Error("Output directory (" + dir + ") is a parent directory of PWD");
       }
-      await qx.tool.utils.files.Utils.deleteRecursive(this.getOutputDir());
+      await qx.tool.utils.files.Utils.deleteRecursive(dir);
     },
 
     /**
@@ -459,8 +456,8 @@ qx.Class.define("qx.tool.compiler.Maker", {
     },
 
     /**
-     * 
-     * @param {string} classname 
+     *
+     * @param {string} classname
      */
     onClassCompiled(classname) {
       this.__compiledClasses[classname] = true;
